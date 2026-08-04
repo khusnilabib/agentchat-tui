@@ -14,11 +14,22 @@ from typing import Any
 APP = "AgentChat TUI"
 VERSION = "2.0.0"
 DEFAULT_BASE = "https://api.openai.com/v1"
+DASHSCOPE_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 DEFAULT_SYSTEM = """You are a careful, pragmatic software engineering agent.
 Use tools when they materially help. Be concise but useful. Never claim an action
 succeeded without checking its result. Ask before destructive or irreversible actions.
 The current workspace is the project directory."""
 DB_PATH = Path.home() / ".agentchat" / "sessions.db"
+
+def load_dotenv() -> None:
+    """Load a local .env without overwriting explicitly exported variables."""
+    path = Path.cwd() / ".env"
+    if not path.exists(): return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line: continue
+        key, value = line.split("=", 1); value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key.strip(), value)
 
 @dataclass
 class Config:
@@ -32,7 +43,12 @@ class Config:
     system: str = DEFAULT_SYSTEM
     @classmethod
     def from_env(cls) -> "Config":
-        return cls(os.getenv("OPENAI_BASE_URL", DEFAULT_BASE), os.getenv("OPENAI_MODEL", "gpt-4o-mini"), os.getenv("OPENAI_API_KEY", ""), float(os.getenv("OPENAI_TEMPERATURE", "0.2")), int(os.getenv("AGENT_MAX_STEPS", "8")), os.getenv("AGENT_STREAM", "1") != "0", os.getenv("AGENT_APPROVE_TOOLS", "1") != "0", os.getenv("AGENT_SYSTEM_PROMPT", DEFAULT_SYSTEM))
+        load_dotenv()
+        model = os.getenv("OPENAI_MODEL", os.getenv("DASHSCOPE_MODEL", "gpt-4o-mini"))
+        is_qwen = model.lower().startswith("qwen")
+        base = os.getenv("OPENAI_BASE_URL", os.getenv("DASHSCOPE_BASE_URL", DASHSCOPE_BASE if is_qwen else DEFAULT_BASE))
+        key = os.getenv("OPENAI_API_KEY", os.getenv("DASHSCOPE_API_KEY", ""))
+        return cls(base, model, key, float(os.getenv("OPENAI_TEMPERATURE", "0.2")), int(os.getenv("AGENT_MAX_STEPS", "8")), os.getenv("AGENT_STREAM", "1") != "0", os.getenv("AGENT_APPROVE_TOOLS", "1") != "0", os.getenv("AGENT_SYSTEM_PROMPT", DEFAULT_SYSTEM))
 
 @dataclass
 class Message:
@@ -68,6 +84,7 @@ class AgentClient:
     def __init__(self, cfg: Config, event: Any): self.cfg, self.event = cfg, event
     def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {"model": self.cfg.model, "messages": messages, "temperature": self.cfg.temperature, "tools": tools, "tool_choice": "auto"}
+        if self.cfg.model.lower().startswith("qwen"): payload["enable_thinking"] = True
         body = json.dumps(payload).encode(); req = urllib.request.Request(self.cfg.base_url.rstrip("/") + "/chat/completions", body, method="POST")
         req.add_header("Authorization", "Bearer " + self.cfg.api_key); req.add_header("Content-Type", "application/json"); req.add_header("User-Agent", f"agentchat-tui/{VERSION}")
         for attempt in range(3):
@@ -83,6 +100,7 @@ class AgentClient:
         # Streaming is intentionally best-effort: tool calls use the normal endpoint.
         if not self.cfg.stream: return self.call(messages, tools)
         payload = {"model": self.cfg.model, "messages": messages, "temperature": self.cfg.temperature, "tools": tools, "tool_choice": "auto", "stream": True}
+        if self.cfg.model.lower().startswith("qwen"): payload["enable_thinking"] = True
         req = urllib.request.Request(self.cfg.base_url.rstrip("/") + "/chat/completions", json.dumps(payload).encode(), method="POST")
         req.add_header("Authorization", "Bearer " + self.cfg.api_key); req.add_header("Content-Type", "application/json")
         text = ""; tool_calls: dict[int, dict[str, Any]] = {}; usage = {}

@@ -26,20 +26,34 @@ export OPENAI_API_KEY="your-key"
 python3 agentchat_tui.py
 ```
 
-Provider alternatif:
+Provider alternatif, termasuk Qwen:
 
 ```bash
-export OPENAI_BASE_URL="https://your-provider.example/v1"
-export OPENAI_MODEL="your-model"
+export DASHSCOPE_API_KEY="sk-..."
+export DASHSCOPE_BASE_URL="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+export DASHSCOPE_MODEL="qwen3.7-max"
+python3 agentchat_tui.py
 ```
+
+Aplikasi otomatis memilih endpoint DashScope ketika model diawali `qwen` dan `OPENAI_BASE_URL` tidak diatur. Payload Qwen juga mengaktifkan `enable_thinking=true`. Template konfigurasi tersedia di `.env.example`; salin menjadi `.env` dan isi key Anda:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+`.env` sudah masuk `.gitignore` dan tidak boleh di-commit.
 
 Environment lengkap:
 
 | Variable | Default | Keterangan |
 |---|---|---|
-| `OPENAI_API_KEY` | — | API key, tidak pernah ditulis ke disk |
+| `OPENAI_API_KEY` | — | API key OpenAI |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL OpenAI-compatible |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model chat |
+| `DASHSCOPE_API_KEY` | — | API key Alibaba Model Studio / DashScope |
+| `DASHSCOPE_BASE_URL` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | Endpoint Qwen international |
+| `DASHSCOPE_MODEL` | `qwen3.7-max` | Preset model Qwen dengan deep thinking aktif |
 | `OPENAI_TEMPERATURE` | `0.2` | Kreativitas respons |
 | `AGENT_MAX_STEPS` | `8` | Batas putaran tool per prompt |
 | `AGENT_STREAM` | `1` | Set `0` untuk mematikan streaming |
