@@ -1,175 +1,230 @@
 #!/usr/bin/env python3
-"""AgentChat TUI — a small, dependency-free terminal UI for an OpenAI-compatible agent."""
-from __future__ import annotations
+"""AgentChat TUI: a secure, batteries-included terminal agent client.
 
-import curses
-import json
-import os
-import queue
-import subprocess
-import threading
-import textwrap
-import urllib.error
-import urllib.request
+Only Python's standard library is required. The client speaks the OpenAI Chat
+Completions protocol, including streaming and tool calls.
+"""
+from __future__ import annotations
+import curses, json, os, queue, shlex, sqlite3, subprocess, textwrap, threading, time, urllib.error, urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 APP = "AgentChat TUI"
+VERSION = "2.0.0"
 DEFAULT_BASE = "https://api.openai.com/v1"
-SYSTEM_PROMPT = """You are a careful, pragmatic software engineering agent.
-Use tools when they materially help. Explain actions briefly, never claim a tool action
-succeeded without checking its result, and ask before destructive operations."""
+DEFAULT_SYSTEM = """You are a careful, pragmatic software engineering agent.
+Use tools when they materially help. Be concise but useful. Never claim an action
+succeeded without checking its result. Ask before destructive or irreversible actions.
+The current workspace is the project directory."""
+DB_PATH = Path.home() / ".agentchat" / "sessions.db"
 
+@dataclass
+class Config:
+    base_url: str = DEFAULT_BASE
+    model: str = "gpt-4o-mini"
+    api_key: str = ""
+    temperature: float = 0.2
+    max_steps: int = 8
+    stream: bool = True
+    approve_tools: bool = True
+    system: str = DEFAULT_SYSTEM
+    @classmethod
+    def from_env(cls) -> "Config":
+        return cls(os.getenv("OPENAI_BASE_URL", DEFAULT_BASE), os.getenv("OPENAI_MODEL", "gpt-4o-mini"), os.getenv("OPENAI_API_KEY", ""), float(os.getenv("OPENAI_TEMPERATURE", "0.2")), int(os.getenv("AGENT_MAX_STEPS", "8")), os.getenv("AGENT_STREAM", "1") != "0", os.getenv("AGENT_APPROVE_TOOLS", "1") != "0", os.getenv("AGENT_SYSTEM_PROMPT", DEFAULT_SYSTEM))
 
 @dataclass
 class Message:
     role: str
     content: str
     timestamp: str = ""
+    name: str = ""
+    tool_call_id: str = ""
 
+class SessionStore:
+    def __init__(self):
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self.db.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, title TEXT, created TEXT, updated TEXT, messages TEXT)")
+        self.db.commit()
+    def save(self, title: str, messages: list[Message], sid: int | None = None) -> int:
+        now = datetime.now().isoformat(timespec="seconds")
+        data = json.dumps([m.__dict__ for m in messages], ensure_ascii=False)
+        if sid:
+            self.db.execute("UPDATE sessions SET title=?,updated=?,messages=? WHERE id=?", (title, now, data, sid))
+        else:
+            cur = self.db.execute("INSERT INTO sessions(title,created,updated,messages) VALUES(?,?,?,?,?)", (title, now, now, data)); sid = cur.lastrowid
+        self.db.commit(); return int(sid)
+    def list(self) -> list[tuple[int, str, str]]:
+        return self.db.execute("SELECT id,title,updated FROM sessions ORDER BY updated DESC LIMIT 30").fetchall()
+    def load(self, sid: int) -> list[Message]:
+        row = self.db.execute("SELECT messages FROM sessions WHERE id=?", (sid,)).fetchone()
+        return [Message(**x) for x in json.loads(row[0])] if row else []
+    def delete(self, sid: int) -> None:
+        self.db.execute("DELETE FROM sessions WHERE id=?", (sid,)); self.db.commit()
 
 class AgentClient:
-    def __init__(self, base_url: str, api_key: str, model: str, tools: list[dict[str, Any]]):
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.model = model
-        self.tools = tools
+    def __init__(self, cfg: Config, event: Any): self.cfg, self.event = cfg, event
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = {"model": self.cfg.model, "messages": messages, "temperature": self.cfg.temperature, "tools": tools, "tool_choice": "auto"}
+        body = json.dumps(payload).encode(); req = urllib.request.Request(self.cfg.base_url.rstrip("/") + "/chat/completions", body, method="POST")
+        req.add_header("Authorization", "Bearer " + self.cfg.api_key); req.add_header("Content-Type", "application/json"); req.add_header("User-Agent", f"agentchat-tui/{VERSION}")
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as res:
+                    return json.loads(res.read())
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode(errors="replace")[:500]
+                if e.code not in (408, 429, 500, 502, 503) or attempt == 2: raise RuntimeError(f"API {e.code}: {detail}")
+                time.sleep(2 ** attempt)
+        raise RuntimeError("request failed")
+    def stream_answer(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        # Streaming is intentionally best-effort: tool calls use the normal endpoint.
+        if not self.cfg.stream: return self.call(messages, tools)
+        payload = {"model": self.cfg.model, "messages": messages, "temperature": self.cfg.temperature, "tools": tools, "tool_choice": "auto", "stream": True}
+        req = urllib.request.Request(self.cfg.base_url.rstrip("/") + "/chat/completions", json.dumps(payload).encode(), method="POST")
+        req.add_header("Authorization", "Bearer " + self.cfg.api_key); req.add_header("Content-Type", "application/json")
+        text = ""; tool_calls: dict[int, dict[str, Any]] = {}; usage = {}
+        try:
+            with urllib.request.urlopen(req, timeout=120) as res:
+                for raw in res:
+                    line = raw.decode(errors="replace").strip()
+                    if not line.startswith("data:"): continue
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]": break
+                    try: delta = json.loads(chunk).get("choices", [{}])[0].get("delta", {})
+                    except json.JSONDecodeError: continue
+                    if delta.get("content"):
+                        text += delta["content"]; self.event.put(("token", delta["content"]))
+                    for call in delta.get("tool_calls", []):
+                        i = call.get("index", 0); item = tool_calls.setdefault(i, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                        item["id"] += call.get("id", "") or ""; fn = call.get("function", {}); item["function"]["name"] += fn.get("name", "") or ""; item["function"]["arguments"] += fn.get("arguments", "") or ""
+            return {"choices": [{"message": {"role": "assistant", "content": text, **({"tool_calls": list(tool_calls.values())} if tool_calls else {})}}], "usage": usage}
+        except Exception:
+            return self.call(messages, tools)
 
-    def complete(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        body = json.dumps({"model": self.model, "messages": messages, "tools": self.tools, "tool_choice": "auto"}).encode()
-        req = urllib.request.Request(self.base_url + "/chat/completions", data=body, method="POST")
-        req.add_header("Authorization", "Bearer " + self.api_key)
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=120) as response:
-            return json.loads(response.read())
+def specs() -> list[dict[str, Any]]:
+    def f(name, description, properties, required): return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}}}
+    return [f("list_files", "List project files (hidden/build/cache files are omitted).", {"path":{"type":"string"}}, []), f("read_file", "Read a UTF-8 project file, capped at 30 KB.", {"path":{"type":"string"}}, ["path"]), f("run_command", "Run a non-destructive shell command in the project. Always explain why first.", {"command":{"type":"string"}}, ["command"])]
 
+def inside(raw: str) -> Path:
+    root = Path.cwd().resolve(); p = (root / (raw or ".")).resolve()
+    if p != root and root not in p.parents: raise ValueError("path escapes the workspace")
+    return p
 
-def tool_specs() -> list[dict[str, Any]]:
-    return [
-        {"type": "function", "function": {"name": "list_files", "description": "List files in a directory.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}}},
-        {"type": "function", "function": {"name": "read_file", "description": "Read a UTF-8 text file, capped at 20 KB.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-        {"type": "function", "function": {"name": "run_command", "description": "Run a shell command in the project directory. Use only safe, non-destructive commands.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
-    ]
-
-
-def safe_path(raw: str) -> Path:
-    root = Path.cwd().resolve()
-    path = (root / (raw or ".")).resolve()
-    if root not in path.parents and path != root:
-        raise ValueError("Path must stay inside the current project directory")
-    return path
-
-
-def execute_tool(name: str, args: dict[str, Any]) -> str:
+def execute(name: str, args: dict[str, Any]) -> str:
     try:
         if name == "list_files":
-            p = safe_path(args.get("path", "."))
-            return "\n".join(str(x.relative_to(Path.cwd())) for x in sorted(p.iterdir())[:200])
-        if name == "read_file":
-            return safe_path(args["path"]).read_text(encoding="utf-8")[:20000]
+            p = inside(args.get("path", ".")); rows = []
+            for x in sorted(p.rglob("*")):
+                if any(part in {".git", ".venv", "__pycache__", "node_modules"} for part in x.parts): continue
+                rows.append(str(x.relative_to(Path.cwd())) + ("/" if x.is_dir() else ""))
+                if len(rows) >= 300: break
+            return "\n".join(rows) or "(empty)"
+        if name == "read_file": return inside(args["path"]).read_text(encoding="utf-8")[:30000]
         if name == "run_command":
-            command = args["command"]
-            forbidden = ["rm ", "sudo", "shutdown", "reboot", "mkfs", ":(){"]
-            if any(x in command.lower() for x in forbidden):
-                return "Rejected: potentially destructive command."
-            result = subprocess.run(command, shell=True, cwd=Path.cwd(), capture_output=True, text=True, timeout=30)
-            return (result.stdout + result.stderr)[-12000:] or "(no output)"
+            cmd = args["command"].strip(); low = cmd.lower()
+            bad = ("rm -rf", "sudo ", "shutdown", "reboot", "mkfs", ":(){", "dd if=", "git push --force")
+            if any(x in low for x in bad): return "Rejected by safety policy: potentially destructive command."
+            r = subprocess.run(cmd, shell=True, cwd=Path.cwd(), capture_output=True, text=True, timeout=45)
+            return (r.stdout + r.stderr)[-16000:] or f"(exit {r.returncode}, no output)"
         return "Unknown tool"
-    except Exception as exc:
-        return f"Tool error: {exc}"
-
+    except Exception as e: return f"Tool error: {type(e).__name__}: {e}"
 
 class App:
-    def __init__(self, stdscr: Any):
-        self.stdscr = stdscr
-        self.messages: list[Message] = []
-        self.api_messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        self.input = ""
-        self.status = "Ready · Ctrl+S settings · Ctrl+L clear · Ctrl+C quit"
-        self.scroll = 0
-        self.busy = False
-        self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
-        self.base_url = os.getenv("OPENAI_BASE_URL", DEFAULT_BASE)
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self.api_key = os.getenv("OPENAI_API_KEY", "")
-
-    def add(self, role: str, content: str) -> None:
-        self.messages.append(Message(role, content, datetime.now().strftime("%H:%M")))
-        self.api_messages.append({"role": role, "content": content})
-
-    def agent(self, prompt: str) -> None:
+    def __init__(self, screen: Any):
+        self.s = screen; self.cfg = Config.from_env(); self.store = SessionStore(); self.sid = None; self.title = "New session"
+        self.view: list[Message] = []; self.api: list[dict[str, Any]] = [{"role":"system","content":self.cfg.system}]; self.input = ""; self.status = "Ready"; self.busy = False; self.scroll = 0; self.events: queue.Queue = queue.Queue(); self.started = time.time()
+    def add(self, role: str, text: str, **kw: Any) -> None:
+        m = Message(role, text, datetime.now().strftime("%H:%M"), **kw); self.view.append(m)
+        if role != "system": self.api.append({"role": role, "content": text, **({"name":m.name} if m.name else {}), **({"tool_call_id":m.tool_call_id} if m.tool_call_id else {})})
+    def save(self) -> None:
+        if self.view: self.sid = self.store.save(self.title, self.view, self.sid)
+    def agent(self) -> None:
         try:
-            while True:
-                result = AgentClient(self.base_url, self.api_key, self.model, tool_specs()).complete(self.api_messages)
-                msg = result["choices"][0]["message"]
-                calls = msg.get("tool_calls") or []
+            calls_done = 0; client = AgentClient(self.cfg, self.events)
+            while calls_done < self.cfg.max_steps:
+                result = client.stream_answer(self.api, specs()); msg = result["choices"][0]["message"]; calls = msg.get("tool_calls") or []
                 if not calls:
-                    content = msg.get("content") or "(empty response)"
-                    self.events.put(("answer", content))
-                    return
-                self.api_messages.append(msg)
+                    self.events.put(("answer", msg.get("content") or "(empty response)")); self.events.put(("done", None)); return
+                self.api.append(msg)
                 for call in calls:
-                    name = call["function"]["name"]
-                    args = json.loads(call["function"].get("arguments") or "{}")
-                    self.events.put(("status", f"Running {name}…"))
-                    output = execute_tool(name, args)
-                    self.api_messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
-        except Exception as exc:
-            self.events.put(("error", f"{type(exc).__name__}: {exc}"))
-
-    def draw(self) -> None:
-        self.stdscr.erase()
-        h, w = self.stdscr.getmaxyx()
-        self.stdscr.attron(curses.color_pair(1)); self.stdscr.addstr(0, 0, f"  {APP}  "); self.stdscr.attroff(curses.color_pair(1))
-        self.stdscr.addstr(0, 18, f"{self.model}  ·  {'configured' if self.api_key else 'API key missing'}")
-        lines: list[tuple[str, int]] = []
-        for m in self.messages:
-            label = "YOU" if m.role == "user" else "AGENT"
-            color = 2 if m.role == "user" else 3
-            lines.append((f"{label}  {m.timestamp}", color))
-            for line in m.content.splitlines() or [""]:
-                lines += [("  " + x, 0) for x in textwrap.wrap(line, max(12, w - 6)) or [""]]
-            lines.append(("", 0))
-        visible = h - 5
-        start = max(0, len(lines) - visible - self.scroll)
-        for y, (line, color) in enumerate(lines[start:start + visible], 2):
-            try: self.stdscr.addstr(y, 2, line[:w - 4], curses.color_pair(color))
-            except curses.error: pass
-        self.stdscr.attron(curses.color_pair(4)); self.stdscr.addstr(h - 3, 0, "─" * (w - 1)); self.stdscr.attroff(curses.color_pair(4))
-        self.stdscr.addstr(h - 2, 2, "> " + self.input[:w - 6])
-        self.stdscr.addstr(h - 1, 2, self.status[:w - 4], curses.color_pair(4))
-        self.stdscr.refresh()
-
-    def run(self) -> None:
-        curses.curs_set(1); self.stdscr.timeout(100)
-        curses.start_color(); curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN); curses.init_pair(2, curses.COLOR_CYAN, -1); curses.init_pair(3, curses.COLOR_GREEN, -1); curses.init_pair(4, curses.COLOR_YELLOW, -1)
+                    calls_done += 1; fn = call.get("function", {}); name = fn.get("name", ""); args = json.loads(fn.get("arguments") or "{}")
+                    if self.cfg.approve_tools:
+                        self.events.put(("approval", f"Tool {name} wants to run with {json.dumps(args, ensure_ascii=False)}. Press y to allow / n to deny."))
+                        while True:
+                            approval_event, answer = self.events.get()
+                            if approval_event == "approval_result" and answer in ("y", "n"): break
+                        if answer == "n": out = "Denied by user."
+                        else: out = execute(name, args)
+                    else: out = execute(name, args)
+                    self.api.append({"role":"tool","tool_call_id":call.get("id", ""),"content":out}); self.events.put(("tool", f"{name}: {out[:160].replace(chr(10),' ')}"))
+            self.events.put(("answer", "Stopped: maximum agent steps reached.")); self.events.put(("done", None))
+        except Exception as e: self.events.put(("error", f"{type(e).__name__}: {e}")); self.events.put(("done", None))
+    def command(self, text: str) -> bool:
+        parts = shlex.split(text); cmd = parts[0].lower() if parts else ""
+        if cmd in ("/quit", "/exit"): return False
+        if cmd == "/help": self.add("assistant", "Commands: /help /clear /save [title] /sessions /load ID /model NAME /provider URL /export FILE /approve on|off /retry /quit"); return True
+        if cmd == "/clear": self.view.clear(); self.api = [{"role":"system","content":self.cfg.system}]; self.title="New session"; self.status="Cleared"; return True
+        if cmd == "/save": self.title = " ".join(parts[1:]) or self.title; self.save(); self.status=f"Saved session #{self.sid}"; return True
+        if cmd == "/sessions": self.add("assistant", "\n".join(f"{i}  {t}  ({u})" for i,t,u in self.store.list()) or "No saved sessions."); return True
+        if cmd == "/load" and len(parts)>1:
+            self.view=self.store.load(int(parts[1])); self.api=[{"role":"system","content":self.cfg.system}]+[{"role":m.role,"content":m.content} for m in self.view]; self.sid=int(parts[1]); self.status="Loaded"; return True
+        if cmd == "/model" and len(parts)>1: self.cfg.model=parts[1]; self.status=f"Model: {self.cfg.model}"; return True
+        if cmd == "/provider" and len(parts)>1: self.cfg.base_url=parts[1]; self.status="Provider updated"; return True
+        if cmd == "/approve" and len(parts)>1: self.cfg.approve_tools=parts[1].lower() in ("on","yes","true"); self.status=f"Tool approval {'on' if self.cfg.approve_tools else 'off'}"; return True
+        if cmd == "/export" and len(parts)>1:
+            Path(parts[1]).write_text("\n\n".join(f"## {m.role.upper()} · {m.timestamp}\n{m.content}" for m in self.view), encoding="utf-8"); self.status=f"Exported {parts[1]}"; return True
+        if cmd == "/retry" and self.view and not self.busy:
+            last=next((m for m in reversed(self.view) if m.role=="user"),None); 
+            if last: self.busy=True; threading.Thread(target=self.agent,daemon=True).start()
+            return True
+        self.add("assistant", "Unknown command. Try /help."); return True
+    def render(self) -> None:
+        self.s.erase(); h,w=self.s.getmaxyx(); w=max(w,40)
+        self.s.attron(curses.color_pair(1)); self.s.addstr(0,0,f"  {APP} v{VERSION}  "); self.s.attroff(curses.color_pair(1)); self.s.addstr(0,24,f"{self.cfg.model} · {'● API' if self.cfg.api_key else '○ no key'} · {self.title}")
+        rows=[]
+        for m in self.view:
+            label = {"user":"YOU","assistant":"AGENT","tool":"TOOL"}.get(m.role,m.role.upper()); color={"user":2,"assistant":3,"tool":5}.get(m.role,0); rows.append((f"{label}  {m.timestamp}",color))
+            for line in m.content.splitlines() or [""]: rows.extend(("  "+x,0) for x in textwrap.wrap(line,max(10,w-7)) or [""])
+            rows.append(("",0))
+        visible=h-6; start=max(0,len(rows)-visible-self.scroll)
+        for y,(line,col) in enumerate(rows[start:start+visible],2):
+            try:self.s.addstr(y,2,line[:w-4],curses.color_pair(col))
+            except curses.error:pass
+        self.s.addstr(h-4,0,"─"*(w-1),curses.color_pair(4)); self.s.addstr(h-3,2,"> "+self.input[:w-6]); self.s.addstr(h-2,2,self.status[:w-4],curses.color_pair(4)); self.s.addstr(h-1,2,"Enter send · /help commands · Ctrl+C quit",curses.color_pair(4)); self.s.refresh()
+    def loop(self) -> None:
+        curses.curs_set(1); self.s.timeout(100); curses.start_color(); curses.use_default_colors()
+        for i,c in enumerate(((-1,curses.COLOR_CYAN),(curses.COLOR_CYAN,-1),(curses.COLOR_GREEN,-1),(curses.COLOR_YELLOW,-1),(curses.COLOR_MAGENTA,-1)),1): curses.init_pair(i,*c)
         while True:
-            self.draw()
-            try:
-                event, data = self.events.get_nowait()
-                if event == "answer": self.add("assistant", data); self.busy = False; self.status = "Ready"
-                elif event == "error": self.add("assistant", "⚠ " + data); self.busy = False; self.status = "Error"
-                else: self.status = data
-            except queue.Empty: pass
-            key = self.stdscr.getch()
-            if key in (3, 17): return
-            if key == 12: self.messages.clear(); self.api_messages = [{"role": "system", "content": SYSTEM_PROMPT}]; self.status = "Conversation cleared"
-            elif key == 19:
-                self.api_key = os.getenv("OPENAI_API_KEY", self.api_key); self.status = "Settings reloaded from environment"
-            elif key in (curses.KEY_UP,): self.scroll = min(self.scroll + 1, max(0, len(self.messages) - 1))
-            elif key in (curses.KEY_DOWN,): self.scroll = max(0, self.scroll - 1)
-            elif key in (10, 13) and self.input.strip() and not self.busy:
-                prompt = self.input.strip(); self.input = ""; self.add("user", prompt)
-                if not self.api_key: self.add("assistant", "⚠ Set OPENAI_API_KEY before chatting."); continue
-                self.busy = True; self.status = "Thinking…"; threading.Thread(target=self.agent, args=(prompt,), daemon=True).start()
-            elif key in (curses.KEY_BACKSPACE, 127, 8): self.input = self.input[:-1]
-            elif 32 <= key <= 126: self.input += chr(key)
-
+            while True:
+                try: event,data=self.events.get_nowait()
+                except queue.Empty: break
+                if event=="answer": self.add("assistant",data); self.status="Ready"; self.save()
+                elif event=="token": self.status="Receiving response…"
+                elif event=="tool": self.add("tool",data); self.status="Tool complete"
+                elif event=="approval": self.status=data
+                elif event=="approval_result": pass
+                elif event=="error": self.add("assistant","⚠ "+data); self.status="Error"
+                elif event=="done": self.busy=False
+            self.render(); key=self.s.getch()
+            if key in (3,17): self.save(); return
+            if key==12: self.command("/clear")
+            elif key==19: self.cfg=Config.from_env(); self.status="Environment settings reloaded"
+            elif key in (curses.KEY_UP,): self.scroll+=1
+            elif key in (curses.KEY_DOWN,): self.scroll=max(0,self.scroll-1)
+            elif key in (ord('y'),ord('Y')) and self.status.startswith("Tool "): self.events.put(("approval_result","y")); self.status="Approved; running tool…"
+            elif key in (ord('n'),ord('N')) and self.status.startswith("Tool "): self.events.put(("approval_result","n")); self.status="Denied; continuing…"
+            elif key in (10,13) and self.input.strip() and not self.busy:
+                text=self.input.strip(); self.input=""
+                if text.startswith("/"): self.command(text); continue
+                self.add("user",text); self.title=(text[:48] + "…") if len(text)>48 else text
+                if not self.cfg.api_key: self.add("assistant","⚠ Set OPENAI_API_KEY, then press Ctrl+S."); continue
+                self.busy=True; self.status="Thinking…"; threading.Thread(target=self.agent,daemon=True).start()
+            elif key in (curses.KEY_BACKSPACE,127,8): self.input=self.input[:-1]
+            elif 32<=key<=126: self.input+=chr(key)
 
 def main() -> None:
-    curses.wrapper(App)
-
+    curses.wrapper(lambda screen: App(screen).loop())
 if __name__ == "__main__": main()

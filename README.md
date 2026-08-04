@@ -1,29 +1,70 @@
 # AgentChat TUI
 
-TUI chat untuk sistem AI agent berbasis Python standard library. Mendukung endpoint OpenAI-compatible, tool calling, dan tiga tool sandboxed: `list_files`, `read_file`, dan `run_command`.
+Premium, dependency-free Python TUI untuk sistem chat AI agent. Dibuat untuk endpoint OpenAI Chat Completions dan provider OpenAI-compatible.
 
-## Jalankan
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+
+## Fitur
+
+- Streaming respons token-by-token dengan fallback otomatis ke non-streaming.
+- Agent loop dengan tool calling dan batas langkah (`AGENT_MAX_STEPS`).
+- Tool built-in: `list_files`, `read_file`, `run_command`.
+- Workspace sandbox: file dibatasi ke direktori proyek saat ini.
+- Approval gate untuk setiap tool (`y` izinkan, `n` tolak).
+- Safety policy untuk menolak command destruktif umum.
+- Retry otomatis untuk error 408/429/5xx.
+- Session persistence SQLite di `~/.agentchat/sessions.db`.
+- Export transkrip ke Markdown.
+- Dukungan provider, model, temperature, system prompt, dan stream melalui environment.
+- UI keyboard-first yang ringan; tidak membutuhkan pip dependency.
+
+## Instalasi dan menjalankan
 
 ```bash
-export OPENAI_API_KEY="..."
-export OPENAI_MODEL="gpt-4o-mini"              # opsional
-export OPENAI_BASE_URL="https://api.openai.com/v1" # opsional
+python3 --version  # 3.10+
+export OPENAI_API_KEY="your-key"
 python3 agentchat_tui.py
 ```
 
-Untuk provider kompatibel OpenAI, ubah `OPENAI_BASE_URL` dan model sesuai provider.
+Provider alternatif:
 
-## Kontrol
+```bash
+export OPENAI_BASE_URL="https://your-provider.example/v1"
+export OPENAI_MODEL="your-model"
+```
 
-- `Enter` kirim pesan
-- `Ctrl+C` / `Ctrl+Q` keluar
-- `Ctrl+L` bersihkan percakapan
-- `Ctrl+S` muat ulang konfigurasi dari environment
-- `↑` / `↓` scroll percakapan
+Environment lengkap:
 
-## Catatan keamanan
+| Variable | Default | Keterangan |
+|---|---|---|
+| `OPENAI_API_KEY` | — | API key, tidak pernah ditulis ke disk |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL OpenAI-compatible |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model chat |
+| `OPENAI_TEMPERATURE` | `0.2` | Kreativitas respons |
+| `AGENT_MAX_STEPS` | `8` | Batas putaran tool per prompt |
+| `AGENT_STREAM` | `1` | Set `0` untuk mematikan streaming |
+| `AGENT_APPROVE_TOOLS` | `1` | Set `0` untuk auto-approve tool |
+| `AGENT_SYSTEM_PROMPT` | built-in | System prompt kustom |
 
-API key hanya dibaca dari environment dan tidak ditulis ke disk. Tool dibatasi ke direktori proyek saat ini. Perintah yang terlihat destruktif (mis. `rm`, `sudo`, `shutdown`) ditolak, tetapi tetap review perintah yang dijalankan agent sebelum memakai proyek ini di lingkungan sensitif.
+## Perintah di dalam TUI
+
+- `/help` — tampilkan bantuan
+- `/clear` — mulai percakapan baru
+- `/save [judul]` — simpan sesi ke SQLite
+- `/sessions` — daftar sesi tersimpan
+- `/load ID` — buka sesi berdasarkan ID
+- `/model NAME` — ganti model aktif
+- `/provider URL` — ganti base URL provider
+- `/approve on|off` — ubah approval tool
+- `/export FILE.md` — ekspor percakapan ke Markdown
+- `/retry` — ulangi prompt terakhir
+- `/quit` — simpan dan keluar
+
+Shortcut: `Enter` kirim, `Ctrl+L` clear, `Ctrl+S` reload environment, `↑/↓` scroll, `Ctrl+C` atau `Ctrl+Q` keluar.
+
+## Keamanan
+
+API key hanya dibaca dari environment. Jangan menaruh token di source code, `.env` yang ter-commit, atau command history. Tool `run_command` tetap harus direview; safety filter bukan pengganti sandbox OS penuh. Untuk lingkungan produksi, jalankan dalam container atau akun dengan permission minimal.
 
 ## Lisensi
 
