@@ -41,6 +41,22 @@ py agentchat_tui.py
 
 Di Windows, `windows-curses` adalah dependency yang dibutuhkan agar TUI `curses` dapat berjalan. SDK DashScope bersifat opsional karena aplikasi memakai endpoint OpenAI-compatible secara langsung; jika diperlukan untuk program Python lain, gunakan `pip install -r requirements-optional.txt`.
 
+## Desktop GUI responsif
+
+Ciprocode juga menyediakan GUI desktop berbasis Tkinter dengan tema dark konsisten, sidebar session, chat panel, composer, status agent, tool approval dialog, dan layout yang menyesuaikan ukuran window:
+
+```bash
+python3 ciprocode_gui.py
+```
+
+Di Windows:
+
+```bat
+py ciprocode_gui.py
+```
+
+GUI menggunakan Python standard library dan tidak membutuhkan browser atau server tambahan.
+
 Provider alternatif, termasuk Qwen:
 
 ```bash
