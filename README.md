@@ -22,9 +22,20 @@ Premium, dependency-free Python TUI untuk sistem chat AI agent. Dibuat untuk end
 
 ```bash
 python3 --version  # 3.10+
+pip install -r requirements.txt
 export OPENAI_API_KEY="your-key"
 python3 agentchat_tui.py
 ```
+
+Di Windows CMD, gunakan `set` untuk sesi aktif:
+
+```bat
+py -m pip install -r requirements.txt
+set OPENAI_API_KEY=your-key
+py agentchat_tui.py
+```
+
+Di Windows, `windows-curses` adalah dependency yang dibutuhkan agar TUI `curses` dapat berjalan. SDK DashScope bersifat opsional karena aplikasi memakai endpoint OpenAI-compatible secara langsung; jika diperlukan untuk program Python lain, gunakan `pip install -r requirements-optional.txt`.
 
 Provider alternatif, termasuk Qwen:
 

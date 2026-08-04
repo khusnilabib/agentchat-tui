@@ -1,0 +1,4 @@
+# AgentChat TUI dependency list
+# The application uses Python standard library for HTTP, SQLite, .env loading, and TUI.
+# Windows needs this curses compatibility package:
+windows-curses>=2.4.0; sys_platform == "win32"
