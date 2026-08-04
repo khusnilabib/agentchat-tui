@@ -153,7 +153,7 @@ def execute(name: str, args: dict[str, Any]) -> str:
 class App:
     def __init__(self, screen: Any):
         self.s = screen; self.cfg = Config.from_env(); self.store = SessionStore(); self.sid = None; self.title = "New session"
-        self.view: list[Message] = []; self.api: list[dict[str, Any]] = [{"role":"system","content":self.cfg.system}]; self.input = ""; self.status = "Ready"; self.busy = False; self.scroll = 0; self.events: queue.Queue = queue.Queue(); self.started = time.time()
+        self.view: list[Message] = []; self.api: list[dict[str, Any]] = [{"role":"system","content":self.cfg.system}]; self.input = ""; self.status = "Ready"; self.busy = False; self.scroll = 0; self.events: queue.Queue = queue.Queue(); self.started = time.time(); self.spinner = 0
     def add(self, role: str, text: str, **kw: Any) -> None:
         m = Message(role, text, datetime.now().strftime("%H:%M"), **kw); self.view.append(m)
         if role != "system": self.api.append({"role": role, "content": text, **({"name":m.name} if m.name else {}), **({"tool_call_id":m.tool_call_id} if m.tool_call_id else {})})
@@ -175,8 +175,10 @@ class App:
                             approval_event, answer = self.events.get()
                             if approval_event == "approval_result" and answer in ("y", "n"): break
                         if answer == "n": out = "Denied by user."
-                        else: out = execute(name, args)
-                    else: out = execute(name, args)
+                        else:
+                            self.events.put(("work", f"Running tool: {name}")); out = execute(name, args)
+                    else:
+                        self.events.put(("work", f"Running tool: {name}")); out = execute(name, args)
                     self.api.append({"role":"tool","tool_call_id":call.get("id", ""),"content":out}); self.events.put(("tool", f"{name}: {out[:160].replace(chr(10),' ')}"))
             self.events.put(("answer", "Stopped: maximum agent steps reached.")); self.events.put(("done", None))
         except Exception as e: self.events.put(("error", f"{type(e).__name__}: {e}")); self.events.put(("done", None))
@@ -248,9 +250,11 @@ class App:
             for m in self.view:
                 label = {"user":"YOU", "assistant":"CIPROCODE", "tool":"TOOL"}.get(m.role, m.role.upper())
                 pair = blue if m.role == "user" else (magenta if m.role == "tool" else white)
-                rows.append((f"│  {label:<10} {m.timestamp}  ", pair))
+                tag = ">> YOU" if m.role == "user" else ("## TOOL" if m.role == "tool" else "<< CIPROCODE")
+                rows.append((f"│  {tag:<14} {m.timestamp}  ", pair))
+                content_pair = blue if m.role == "user" else (magenta if m.role == "tool" else white)
                 for line in m.content.splitlines() or [""]:
-                    rows.extend(("│    " + part, 0) for part in textwrap.wrap(line, max(12, w - 12), replace_whitespace=False) or [""])
+                    rows.extend(("│     " + part, content_pair) for part in textwrap.wrap(line, max(12, w - 13), replace_whitespace=False) or [""])
                 rows.append(("│", 0))
             visible = max(1, h - 14); start = max(0, len(rows) - visible - self.scroll)
             for y, (line, pair) in enumerate(rows[start:start + visible], 5): put(y, left, line, pair, right - left + 1)
@@ -260,8 +264,12 @@ class App:
             if len(rows) > visible:
                 track = max(1, visible); thumb = max(1, track * visible // len(rows)); pos = min(track - thumb, track * self.scroll // max(1, len(rows)))
                 for i in range(track): put(5 + i, right - 1, "█" if pos <= i < pos + thumb else "│", blue if pos <= i < pos + thumb else muted)
-            # Dedicated input column with a visible border and status row.
+            # Dedicated input column with a visible border and live work indicator.
             iy = h - 7
+            if self.busy:
+                frames = "|/-\\"; frame = frames[self.spinner % len(frames)]
+                activity = "CIPROCODE is thinking..." if self.status in ("Thinking…", "Receiving response…") else self.status
+                put(iy - 1, left + 2, f"{frame} {activity}", amber, right - left - 3)
             put(iy, left, "┌" + "─" * (right - left - 1) + "┐", blue)
             put(iy + 1, left, "│", blue); put(iy + 1, left + 2, "MESSAGE", muted); put(iy + 1, right, "│", blue)
             put(iy + 2, left, "│", blue); put(iy + 2, left + 2, "❯ " + (self.input or "Type your message here…"), white if self.input else muted, right - left - 4); put(iy + 2, right, "│", blue)
@@ -281,9 +289,11 @@ class App:
                 elif event=="token": self.status="Receiving response…"
                 elif event=="tool": self.add("tool",data); self.status="Tool complete"
                 elif event=="approval": self.status=data
+                elif event=="work": self.status=data
                 elif event=="approval_result": pass
                 elif event=="error": self.add("assistant","⚠ "+data); self.status="Error"
                 elif event=="done": self.busy=False
+            if self.busy: self.spinner = (self.spinner + 1) % 4
             self.render(); key=self.s.getch()
             if key in (3,17): self.save(); return
             if key==12: self.command("/clear")
