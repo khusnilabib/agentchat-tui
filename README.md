@@ -1,6 +1,8 @@
-# AgentChat TUI
+# Ciprocode CLI
 
-Premium, dependency-free Python TUI untuk sistem chat AI agent. Dibuat untuk endpoint OpenAI Chat Completions dan provider OpenAI-compatible.
+Terminal AI agent client dengan tampilan modern bergaya agent CLI, workspace rail, conversation viewport, dan composer yang jelas.
+
+Premium, dependency-free Python TUI untuk sistem chat AI agent dengan brand **Ciprocode CLI**. Layout utama terdiri dari sidebar workspace/session, header model dan koneksi, area percakapan terpisah berdasarkan pengirim, serta composer di bagian bawah. Dibuat untuk endpoint OpenAI Chat Completions dan provider OpenAI-compatible.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 

@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-APP = "AgentChat TUI"
+APP = "CIPROCODE CLI"
 VERSION = "2.0.0"
 DEFAULT_BASE = "https://api.openai.com/v1"
 DASHSCOPE_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
@@ -200,18 +200,45 @@ class App:
             return True
         self.add("assistant", "Unknown command. Try /help."); return True
     def render(self) -> None:
-        self.s.erase(); h,w=self.s.getmaxyx(); w=max(w,40)
-        self.s.attron(curses.color_pair(1)); self.s.addstr(0,0,f"  {APP} v{VERSION}  "); self.s.attroff(curses.color_pair(1)); self.s.addstr(0,24,f"{self.cfg.model} · {'● API' if self.cfg.api_key else '○ no key'} · {self.title}")
-        rows=[]
+        self.s.erase(); h, w = self.s.getmaxyx(); w = max(w, 48)
+        sidebar = 26 if w >= 90 else 0
+        main_x = sidebar + 1 if sidebar else 0
+        main_w = w - main_x
+        def put(y: int, x: int, text: str, pair: int = 0, maxw: int | None = None) -> None:
+            try:
+                if maxw is not None: text = text[:maxw]
+                self.s.addstr(y, x, text, curses.color_pair(pair))
+            except curses.error: pass
+        # Header: deliberately compact, similar to modern agent CLIs.
+        put(0, 0, "╭" + "─" * (w - 2) + "╮", 1)
+        put(1, 0, "│", 1); put(1, 2, "◆ CIPROCODE CLI", 1); put(1, 21, f"v{VERSION}", 4)
+        put(1, main_x + 2, f"{self.cfg.model}  ·  {'● connected' if self.cfg.api_key else '○ API key missing'}", 4, main_w - 4); put(1, w - 2, "│", 1)
+        put(2, 0, "├" + "─" * (w - 2) + "┤", 1)
+        # Left rail: session context and quick controls.
+        if sidebar:
+            for y in range(3, h - 4): put(y, sidebar, "│", 4)
+            put(3, 2, "WORKSPACE", 4); put(4, 2, "◆ current project", 3, sidebar - 4)
+            put(6, 2, "SESSION", 4); put(7, 2, (self.title or "New session")[:sidebar-4], 2)
+            put(9, 2, "SHORTCUTS", 4)
+            for y, text in enumerate(("Enter   send message", "↑ ↓     scroll chat", "Ctrl+L  clear", "Ctrl+S  reload .env", "Ctrl+Q  quit"), 10): put(y, 2, text, 0, sidebar - 4)
+            put(h-6, 2, "AGENT", 4); put(h-5, 2, "tools: " + ("approval" if self.cfg.approve_tools else "auto"), 0, sidebar-4); put(h-4, 2, "steps: " + str(self.cfg.max_steps), 0, sidebar-4)
+        # Conversation viewport.
+        rows: list[tuple[str, int]] = []
         for m in self.view:
-            label = {"user":"YOU","assistant":"AGENT","tool":"TOOL"}.get(m.role,m.role.upper()); color={"user":2,"assistant":3,"tool":5}.get(m.role,0); rows.append((f"{label}  {m.timestamp}",color))
-            for line in m.content.splitlines() or [""]: rows.extend(("  "+x,0) for x in textwrap.wrap(line,max(10,w-7)) or [""])
-            rows.append(("",0))
-        visible=h-6; start=max(0,len(rows)-visible-self.scroll)
-        for y,(line,col) in enumerate(rows[start:start+visible],2):
-            try:self.s.addstr(y,2,line[:w-4],curses.color_pair(col))
-            except curses.error:pass
-        self.s.addstr(h-4,0,"─"*(w-1),curses.color_pair(4)); self.s.addstr(h-3,2,"> "+self.input[:w-6]); self.s.addstr(h-2,2,self.status[:w-4],curses.color_pair(4)); self.s.addstr(h-1,2,"Enter send · /help commands · Ctrl+C quit",curses.color_pair(4)); self.s.refresh()
+            label = {"user":"YOU", "assistant":"CIPROCODE", "tool":"TOOL"}.get(m.role, m.role.upper())
+            color = {"user":2, "assistant":3, "tool":5}.get(m.role, 0)
+            rows.append((f"{label}  ·  {m.timestamp}", color))
+            for line in m.content.splitlines() or [""]:
+                wrapped = textwrap.wrap(line, max(10, main_w - 8), replace_whitespace=False) or [""]
+                rows.extend(("  " + part, 0) for part in wrapped)
+            rows.append(("", 0))
+        visible = max(1, h - 8); start = max(0, len(rows) - visible - self.scroll)
+        for y, (line, pair) in enumerate(rows[start:start + visible], 3): put(y, main_x + 3, line, pair, main_w - 6)
+        # Composer and footer.
+        put(h-4, 0, "├" + "─" * (w - 2) + "┤", 1)
+        put(h-3, 0, "│", 1); put(h-3, main_x + 2, "❯ " + (self.input or "Ask anything…"), 2 if self.input else 4, main_w - 4); put(h-3, w - 2, "│", 1)
+        put(h-2, 0, "│", 1); put(h-2, main_x + 2, self.status, 4, main_w - 4); put(h-2, w - 2, "│", 1)
+        put(h-1, 0, "╰" + "─" * (w - 2) + "╯", 1); self.s.refresh()
     def loop(self) -> None:
         curses.curs_set(1); self.s.timeout(100); curses.start_color(); curses.use_default_colors()
         for i,c in enumerate(((-1,curses.COLOR_CYAN),(curses.COLOR_CYAN,-1),(curses.COLOR_GREEN,-1),(curses.COLOR_YELLOW,-1),(curses.COLOR_MAGENTA,-1)),1): curses.init_pair(i,*c)
