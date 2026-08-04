@@ -10,8 +10,10 @@ Premium, dependency-free Python TUI untuk sistem chat AI agent dengan brand **Ci
 
 - Streaming respons token-by-token dengan fallback otomatis ke non-streaming.
 - Agent loop dengan tool calling dan batas langkah (`AGENT_MAX_STEPS`).
-- Tool built-in: `list_files`, `read_file`, `run_command`.
+- Tool built-in: `list_files`, `search_files`, `read_file`, `run_command`.
 - Workspace sandbox: file dibatasi ke direktori proyek saat ini.
+- Coding-agent system prompt: agent wajib inspeksi directory, mencari simbol, membaca file relevan, lalu memvalidasi dengan test/lint.
+- File rahasia seperti `.env`, credential, `.pem`, dan `.key` dilindungi dari pembacaan agent.
 - Approval gate untuk setiap tool (`y` izinkan, `n` tolak).
 - Safety policy untuk menolak command destruktif umum.
 - Retry otomatis untuk error 408/429/5xx.

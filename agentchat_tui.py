@@ -12,13 +12,41 @@ from pathlib import Path
 from typing import Any
 
 APP = "CIPROCODE CLI"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 DEFAULT_BASE = "https://api.openai.com/v1"
 DASHSCOPE_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-DEFAULT_SYSTEM = """You are a careful, pragmatic software engineering agent.
-Use tools when they materially help. Be concise but useful. Never claim an action
-succeeded without checking its result. Ask before destructive or irreversible actions.
-The current workspace is the project directory."""
+DEFAULT_SYSTEM = """You are Ciprocode, a senior coding agent and pair programmer.
+
+MISSION
+Help the user understand, design, debug, refactor, test, and document software in the
+current workspace. Prefer practical, minimal changes that match the existing project.
+Answer in the user's language when possible and show exact commands or code when useful.
+
+WORKSPACE PROTOCOL
+1. Treat the current workspace as the source of truth. Before suggesting a change,
+   inspect the relevant directory and files with list_files, search_files, and read_file.
+2. For broad requests, start with list_files at the requested path, then narrow down.
+   Never assume a framework, entry point, package manager, or configuration file.
+3. Read only the files needed for the task. Respect .gitignore, .env files, secrets,
+   credentials, and private keys; never print or expose secret values.
+4. Use search_files to locate symbols, routes, imports, tests, and configuration before
+   reading large files. Summarize what you found before proposing implementation.
+5. Use run_command for read-only inspection, tests, formatters, linters, and builds when
+   appropriate. Ask for confirmation before destructive, network-changing, or irreversible
+   actions. Never claim a command or edit succeeded without checking its output.
+
+CODING STANDARDS
+- Preserve the project's existing style and public behavior unless the user requests a
+  breaking change. Prefer small, reviewable changes with clear reasoning.
+- Consider errors, edge cases, security, portability, performance, and backwards
+  compatibility. Do not invent APIs or dependencies.
+- After changes, run the narrowest useful validation and report files changed, tests run,
+  failures, and any remaining risks. If you cannot edit files with the available tools,
+  provide a precise patch or implementation plan.
+- Be transparent: distinguish facts observed in files from assumptions. Ask a focused
+  question when requirements are ambiguous.
+
+The current workspace is the project directory. Use tools proactively when they help."""
 DB_PATH = Path.home() / ".agentchat" / "sessions.db"
 
 def load_dotenv() -> None:
@@ -124,7 +152,12 @@ class AgentClient:
 
 def specs() -> list[dict[str, Any]]:
     def f(name, description, properties, required): return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}}}
-    return [f("list_files", "List project files (hidden/build/cache files are omitted).", {"path":{"type":"string"}}, []), f("read_file", "Read a UTF-8 project file, capped at 30 KB.", {"path":{"type":"string"}}, ["path"]), f("run_command", "Run a non-destructive shell command in the project. Always explain why first.", {"command":{"type":"string"}}, ["command"])]
+    return [
+        f("list_files", "List project files under a directory. Hidden, build, cache, and dependency folders are omitted.", {"path":{"type":"string"}}, []),
+        f("search_files", "Search text in project files recursively. Use this to find symbols, imports, routes, tests, and config before reading files.", {"query":{"type":"string"}, "path":{"type":"string"}}, ["query"]),
+        f("read_file", "Read a UTF-8 project file, capped at 30 KB. Never use it to expose secrets.", {"path":{"type":"string"}}, ["path"]),
+        f("run_command", "Run a non-destructive shell command in the project for inspection, tests, linting, formatting, or builds. Always explain why first.", {"command":{"type":"string"}}, ["command"]),
+    ]
 
 def inside(raw: str) -> Path:
     root = Path.cwd().resolve(); p = (root / (raw or ".")).resolve()
@@ -140,7 +173,23 @@ def execute(name: str, args: dict[str, Any]) -> str:
                 rows.append(str(x.relative_to(Path.cwd())) + ("/" if x.is_dir() else ""))
                 if len(rows) >= 300: break
             return "\n".join(rows) or "(empty)"
-        if name == "read_file": return inside(args["path"]).read_text(encoding="utf-8")[:30000]
+        if name == "search_files":
+            query = str(args["query"]); root = inside(args.get("path", ".")); hits = []
+            ignored = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", ".next", ".cache"}
+            for file in root.rglob("*"):
+                if not file.is_file() or any(part in ignored for part in file.parts): continue
+                try: text = file.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError): continue
+                if query.lower() in text.lower():
+                    for number, line in enumerate(text.splitlines(), 1):
+                        if query.lower() in line.lower(): hits.append(f"{file.relative_to(Path.cwd())}:{number}: {line.strip()[:240]}")
+                        if len(hits) >= 100: return "\n".join(hits)
+            return "\n".join(hits) or "No matches found."
+        if name == "read_file":
+            p = inside(args["path"])
+            secret_names = {".env", ".env.local", ".env.production", "credentials.json", "secrets.json"}
+            if p.name in secret_names or p.suffix.lower() in {".pem", ".key", ".p12"}: return "Rejected: secret or credential file is protected."
+            return p.read_text(encoding="utf-8")[:30000]
         if name == "run_command":
             cmd = args["command"].strip(); low = cmd.lower()
             bad = ("rm -rf", "sudo ", "shutdown", "reboot", "mkfs", ":(){", "dd if=", "git push --force")
