@@ -37,12 +37,28 @@ python3 agentchat_tui.py
 
 Aplikasi otomatis memilih endpoint DashScope ketika model diawali `qwen` dan `OPENAI_BASE_URL` tidak diatur. Payload Qwen juga mengaktifkan `enable_thinking=true`. Template konfigurasi tersedia di `.env.example`; salin menjadi `.env` dan isi key Anda:
 
+Di Linux/macOS:
+
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-`.env` sudah masuk `.gitignore` dan tidak boleh di-commit.
+Di Windows Command Prompt (CMD):
+
+```bat
+copy .env.example .env
+notepad .env
+```
+
+Di Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+`chmod` tidak tersedia di CMD/PowerShell dan tidak diperlukan untuk aplikasi ini. `.env` sudah masuk `.gitignore` dan tidak boleh di-commit.
 
 Environment lengkap:
 
