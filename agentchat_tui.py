@@ -239,24 +239,36 @@ class App:
             center(panel_y + 8, "●", amber); put(panel_y + 8, (w // 2) + 3, "Tip  Keep your API key in .env — never commit secrets", amber, w // 2 - 5)
             put(h - 2, 2, str(Path.cwd()), muted, max(10, w - 30)); put(h - 2, w - 15, f"v{VERSION}", muted); put(h - 2, w - 2, "·", blue)
         else:
-            # Chat mode: transcript fills the canvas; the input card remains anchored.
+            # Chat mode: two explicit columns — conversation and composer.
+            left, right = 2, w - 3
+            put(2, left, "┌" + "─" * (right - left - 1) + "┐", muted)
+            put(3, left, "│", muted); put(3, left + 2, "CONVERSATION", white); put(3, right, "│", muted)
+            put(4, left, "├" + "─" * (right - left - 1) + "┤", muted)
             rows: list[tuple[str, int]] = []
             for m in self.view:
                 label = {"user":"YOU", "assistant":"CIPROCODE", "tool":"TOOL"}.get(m.role, m.role.upper())
                 pair = blue if m.role == "user" else (magenta if m.role == "tool" else white)
-                rows.append((f"{label}  ·  {m.timestamp}", pair))
+                rows.append((f"│  {label:<10} {m.timestamp}  ", pair))
                 for line in m.content.splitlines() or [""]:
-                    rows.extend(("  " + part, 0) for part in textwrap.wrap(line, max(12, w - 9), replace_whitespace=False) or [""])
-                rows.append(("", 0))
-            visible = max(1, h - 9); start = max(0, len(rows) - visible - self.scroll)
-            for y, (line, pair) in enumerate(rows[start:start + visible], 3): put(y, 4, line, pair, w - 8)
-            # Scroll indicator on the far right.
+                    rows.extend(("│    " + part, 0) for part in textwrap.wrap(line, max(12, w - 12), replace_whitespace=False) or [""])
+                rows.append(("│", 0))
+            visible = max(1, h - 14); start = max(0, len(rows) - visible - self.scroll)
+            for y, (line, pair) in enumerate(rows[start:start + visible], 5): put(y, left, line, pair, right - left + 1)
+            for y in range(5, min(h - 9, 5 + visible)): put(y, right, "│", muted)
+            put(min(h - 9, 5 + visible), left, "└" + "─" * (right - left - 1) + "┘", muted)
+            # Scroll indicator on the far right of the conversation column.
             if len(rows) > visible:
-                track = max(1, h - 11); thumb = max(1, track * visible // len(rows)); pos = min(track - thumb, track * self.scroll // max(1, len(rows)))
-                for i in range(track): put(3 + i, w - 2, "█" if pos <= i < pos + thumb else "│", blue if pos <= i < pos + thumb else muted)
-            put(h - 6, 2, "▌", blue); put(h - 6, 4, self.input or "Ask anything…", white if self.input else muted, w - 8)
-            put(h - 5, 4, self.status, amber, w - 8)
-            put(h - 3, 3, str(Path.cwd()), muted, w - 28); put(h - 3, w - 23, "8.7K", muted); put(h - 3, w - 11, "ctrl+p commands", white)
+                track = max(1, visible); thumb = max(1, track * visible // len(rows)); pos = min(track - thumb, track * self.scroll // max(1, len(rows)))
+                for i in range(track): put(5 + i, right - 1, "█" if pos <= i < pos + thumb else "│", blue if pos <= i < pos + thumb else muted)
+            # Dedicated input column with a visible border and status row.
+            iy = h - 7
+            put(iy, left, "┌" + "─" * (right - left - 1) + "┐", blue)
+            put(iy + 1, left, "│", blue); put(iy + 1, left + 2, "MESSAGE", muted); put(iy + 1, right, "│", blue)
+            put(iy + 2, left, "│", blue); put(iy + 2, left + 2, "❯ " + (self.input or "Type your message here…"), white if self.input else muted, right - left - 4); put(iy + 2, right, "│", blue)
+            put(iy + 3, left, "├" + "─" * (right - left - 1) + "┤", blue)
+            put(iy + 4, left, "│", blue); put(iy + 4, left + 2, self.status, amber, right - left - 4); put(iy + 4, right, "│", blue)
+            put(iy + 5, left, "└" + "─" * (right - left - 1) + "┘", blue)
+            put(h - 1, 3, str(Path.cwd()), muted, w - 30); put(h - 1, w - 22, "Enter send · /help", muted)
         self.s.refresh()
     def loop(self) -> None:
         curses.curs_set(1); self.s.timeout(100); curses.start_color(); curses.use_default_colors()
