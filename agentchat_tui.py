@@ -70,7 +70,7 @@ class SessionStore:
         if sid:
             self.db.execute("UPDATE sessions SET title=?,updated=?,messages=? WHERE id=?", (title, now, data, sid))
         else:
-            cur = self.db.execute("INSERT INTO sessions(title,created,updated,messages) VALUES(?,?,?,?,?)", (title, now, now, data)); sid = cur.lastrowid
+            cur = self.db.execute("INSERT INTO sessions(title,created,updated,messages) VALUES(?,?,?,?)", (title, now, now, data)); sid = cur.lastrowid
         self.db.commit(); return int(sid)
     def list(self) -> list[tuple[int, str, str]]:
         return self.db.execute("SELECT id,title,updated FROM sessions ORDER BY updated DESC LIMIT 30").fetchall()
