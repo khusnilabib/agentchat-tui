@@ -200,48 +200,67 @@ class App:
             return True
         self.add("assistant", "Unknown command. Try /help."); return True
     def render(self) -> None:
-        self.s.erase(); h, w = self.s.getmaxyx(); w = max(w, 48)
-        sidebar = 26 if w >= 90 else 0
-        main_x = sidebar + 1 if sidebar else 0
-        main_w = w - main_x
-        def put(y: int, x: int, text: str, pair: int = 0, maxw: int | None = None) -> None:
+        """Render a focused, dark, modern agent workspace.
+
+        Empty sessions get a centered welcome panel; active sessions switch to a
+        clean transcript with a fixed composer, blue accent rail, and muted metadata.
+        """
+        self.s.erase(); h, w = self.s.getmaxyx(); w = max(w, 52)
+        blue, white, muted, amber, magenta = 2, 3, 4, 4, 5
+        def put(y: int, x: int, text: str, pair: int = 0, maxw: int | None = None, attrs: int = 0) -> None:
             try:
                 if maxw is not None: text = text[:maxw]
-                self.s.addstr(y, x, text, curses.color_pair(pair))
+                self.s.addstr(max(0, y), max(0, x), text, curses.color_pair(pair) | attrs)
             except curses.error: pass
-        # Header: deliberately compact, similar to modern agent CLIs.
-        put(0, 0, "╭" + "─" * (w - 2) + "╮", 1)
-        put(1, 0, "│", 1); put(1, 2, "◆ CIPROCODE CLI", 1); put(1, 21, f"v{VERSION}", 4)
-        put(1, main_x + 2, f"{self.cfg.model}  ·  {'● connected' if self.cfg.api_key else '○ API key missing'}", 4, main_w - 4); put(1, w - 2, "│", 1)
-        put(2, 0, "├" + "─" * (w - 2) + "┤", 1)
-        # Left rail: session context and quick controls.
-        if sidebar:
-            for y in range(3, h - 4): put(y, sidebar, "│", 4)
-            put(3, 2, "WORKSPACE", 4); put(4, 2, "◆ current project", 3, sidebar - 4)
-            put(6, 2, "SESSION", 4); put(7, 2, (self.title or "New session")[:sidebar-4], 2)
-            put(9, 2, "SHORTCUTS", 4)
-            for y, text in enumerate(("Enter   send message", "↑ ↓     scroll chat", "Ctrl+L  clear", "Ctrl+S  reload .env", "Ctrl+Q  quit"), 10): put(y, 2, text, 0, sidebar - 4)
-            put(h-6, 2, "AGENT", 4); put(h-5, 2, "tools: " + ("approval" if self.cfg.approve_tools else "auto"), 0, sidebar-4); put(h-4, 2, "steps: " + str(self.cfg.max_steps), 0, sidebar-4)
-        # Conversation viewport.
-        rows: list[tuple[str, int]] = []
-        for m in self.view:
-            label = {"user":"YOU", "assistant":"CIPROCODE", "tool":"TOOL"}.get(m.role, m.role.upper())
-            color = {"user":2, "assistant":3, "tool":5}.get(m.role, 0)
-            rows.append((f"{label}  ·  {m.timestamp}", color))
-            for line in m.content.splitlines() or [""]:
-                wrapped = textwrap.wrap(line, max(10, main_w - 8), replace_whitespace=False) or [""]
-                rows.extend(("  " + part, 0) for part in wrapped)
-            rows.append(("", 0))
-        visible = max(1, h - 8); start = max(0, len(rows) - visible - self.scroll)
-        for y, (line, pair) in enumerate(rows[start:start + visible], 3): put(y, main_x + 3, line, pair, main_w - 6)
-        # Composer and footer.
-        put(h-4, 0, "├" + "─" * (w - 2) + "┤", 1)
-        put(h-3, 0, "│", 1); put(h-3, main_x + 2, "❯ " + (self.input or "Ask anything…"), 2 if self.input else 4, main_w - 4); put(h-3, w - 2, "│", 1)
-        put(h-2, 0, "│", 1); put(h-2, main_x + 2, self.status, 4, main_w - 4); put(h-2, w - 2, "│", 1)
-        put(h-1, 0, "╰" + "─" * (w - 2) + "╯", 1); self.s.refresh()
+        def center(y: int, text: str, pair: int = 0) -> None: put(y, max(0, (w - len(text)) // 2), text, pair)
+        # Global chrome: almost-black canvas, tiny brand mark, quiet footer.
+        put(1, 2, "◆", blue); put(1, 4, "CIPROCODE", white); put(1, 14, "CLI", muted)
+        put(1, w - 21, self.cfg.model, muted, 18); put(1, w - 2, "·", blue)
+        if not self.view:
+            logo = [" ██████╗██╗██████╗ ██████╗  ██████╗  ██████╗ ██████╗ ██████╗ ███████╗",
+                    "██╔════╝██║██╔══██╗██╔══██╗██╔═══██╗██╔════╝██╔══██╗██╔══██╗██╔════╝",
+                    "██║     ██║██████╔╝██████╔╝██║   ██║██║     ██████╔╝██║  ██║█████╗  ",
+                    "██║     ██║██╔═══╝ ██╔══██╗██║   ██║██║     ██╔══██╗██║  ██║██╔══╝  ",
+                    "╚██████╗██║██║     ██║  ██║╚██████╔╝╚██████╗██║  ██║██████╔╝███████╗",
+                    " ╚═════╝╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚═════╝ ╚══════╝"]
+            # Compact wordmark fallback if terminal is too narrow.
+            if w >= 84:
+                for i, line in enumerate(logo): center(5 + i, line, white if i > 1 else muted)
+                panel_y, panel_w = 13, min(680, w - 18)
+            else:
+                center(6, "CIPROCODE CLI", white); panel_y, panel_w = 9, min(680, w - 10)
+            left = max(3, (w - panel_w) // 2)
+            # Input card with a single electric-blue left rail.
+            for y in range(panel_y, panel_y + 3):
+                put(y, left, "▌", blue); put(y, left + 2, " " * max(1, panel_w - 5), 0, panel_w - 5, curses.A_REVERSE)
+            put(panel_y + 1, left + 3, self.input or 'Ask anything…  Try "explain this project"', white if self.input else muted, panel_w - 8)
+            put(panel_y + 3, left + 3, "Build", blue); put(panel_y + 3, left + 10, "·", muted); put(panel_y + 3, left + 13, self.cfg.model, white, panel_w - 16)
+            center(panel_y + 5, "enter  send     ctrl+l  clear     ctrl+p  commands", muted)
+            center(panel_y + 8, "●", amber); put(panel_y + 8, (w // 2) + 3, "Tip  Keep your API key in .env — never commit secrets", amber, w // 2 - 5)
+            put(h - 2, 2, str(Path.cwd()), muted, max(10, w - 30)); put(h - 2, w - 15, f"v{VERSION}", muted); put(h - 2, w - 2, "·", blue)
+        else:
+            # Chat mode: transcript fills the canvas; the input card remains anchored.
+            rows: list[tuple[str, int]] = []
+            for m in self.view:
+                label = {"user":"YOU", "assistant":"CIPROCODE", "tool":"TOOL"}.get(m.role, m.role.upper())
+                pair = blue if m.role == "user" else (magenta if m.role == "tool" else white)
+                rows.append((f"{label}  ·  {m.timestamp}", pair))
+                for line in m.content.splitlines() or [""]:
+                    rows.extend(("  " + part, 0) for part in textwrap.wrap(line, max(12, w - 9), replace_whitespace=False) or [""])
+                rows.append(("", 0))
+            visible = max(1, h - 9); start = max(0, len(rows) - visible - self.scroll)
+            for y, (line, pair) in enumerate(rows[start:start + visible], 3): put(y, 4, line, pair, w - 8)
+            # Scroll indicator on the far right.
+            if len(rows) > visible:
+                track = max(1, h - 11); thumb = max(1, track * visible // len(rows)); pos = min(track - thumb, track * self.scroll // max(1, len(rows)))
+                for i in range(track): put(3 + i, w - 2, "█" if pos <= i < pos + thumb else "│", blue if pos <= i < pos + thumb else muted)
+            put(h - 6, 2, "▌", blue); put(h - 6, 4, self.input or "Ask anything…", white if self.input else muted, w - 8)
+            put(h - 5, 4, self.status, amber, w - 8)
+            put(h - 3, 3, str(Path.cwd()), muted, w - 28); put(h - 3, w - 23, "8.7K", muted); put(h - 3, w - 11, "ctrl+p commands", white)
+        self.s.refresh()
     def loop(self) -> None:
         curses.curs_set(1); self.s.timeout(100); curses.start_color(); curses.use_default_colors()
-        for i,c in enumerate(((-1,curses.COLOR_CYAN),(curses.COLOR_CYAN,-1),(curses.COLOR_GREEN,-1),(curses.COLOR_YELLOW,-1),(curses.COLOR_MAGENTA,-1)),1): curses.init_pair(i,*c)
+        for i,c in enumerate(((-1,-1),(curses.COLOR_BLUE,-1),(curses.COLOR_WHITE,-1),(curses.COLOR_YELLOW,-1),(curses.COLOR_MAGENTA,-1)),1): curses.init_pair(i,*c)
         while True:
             while True:
                 try: event,data=self.events.get_nowait()
