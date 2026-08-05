@@ -210,6 +210,12 @@ class App:
         if self.view: self.sid = self.store.save(self.title, self.view, self.sid)
     def agent(self) -> None:
         try:
+            prompt = next((m.content for m in reversed(self.view) if m.role == "user"), "")
+            keywords = ("directory", "folder", "file", "project", "kode", "code", "source", "struktur", "repository", "repo", "path")
+            if any(word in prompt.lower() for word in keywords):
+                listing = execute("list_files", {"path": "."})[:12000]
+                self.api.append({"role": "system", "content": "Workspace index generated for this request. Use it to locate relevant files; do not expose secrets.\n" + listing})
+                self.events.put(("tool", "workspace indexed: current project files are available to the agent"))
             calls_done = 0; client = AgentClient(self.cfg, self.events)
             while calls_done < self.cfg.max_steps:
                 result = client.stream_answer(self.api, specs()); msg = result["choices"][0]["message"]; calls = msg.get("tool_calls") or []

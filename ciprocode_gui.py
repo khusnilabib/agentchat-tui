@@ -6,7 +6,6 @@ from tkinter import messagebox, ttk
 from pathlib import Path
 from typing import Any
 
-from agentchat_tui import App as TuiApp  # only for shared data/model helpers
 from agentchat_tui import AgentClient, Config, Message, SessionStore, execute, specs
 
 BG = "#0b0d10"; PANEL = "#12161c"; CARD = "#171c23"; BORDER = "#293241"
@@ -76,6 +75,14 @@ class CiprocodeGUI(tk.Tk):
         self.add("user", text); self.title_name=text[:48]; self.set_busy(True); self.status.configure(text="|  CIPROCODE is thinking…", fg=AMBER); threading.Thread(target=self._agent, daemon=True).start(); return "break"
     def _agent(self):
         try:
+            # Pre-index the workspace for coding/file questions. This makes directory
+            # awareness reliable even when a provider chooses not to emit a tool call.
+            prompt = next((m.content for m in reversed(self.view) if m.role == "user"), "")
+            keywords = ("directory", "folder", "file", "project", "kode", "code", "source", "struktur", "repository", "repo", "path")
+            if any(word in prompt.lower() for word in keywords):
+                listing = execute("list_files", {"path": "."})[:12000]
+                self.api.append({"role": "system", "content": "Workspace index generated for this request. Use it to locate relevant files; do not expose secrets.\n" + listing})
+                self.events.put(("tool", "workspace indexed: current project files are available to the agent"))
             client=AgentClient(self.cfg, self.events); steps=0
             while steps < self.cfg.max_steps:
                 result=client.stream_answer(self.api, specs()); msg=result["choices"][0]["message"]; calls=msg.get("tool_calls") or []
@@ -115,7 +122,10 @@ class CiprocodeGUI(tk.Tk):
     def reload_config(self): self.cfg=Config.from_env(); self.model_label.configure(text=self.cfg.model); self.status.configure(text="Configuration reloaded from .env", fg=MUTED)
     def command(self,text):
         if text.strip()=="/clear": self.new_session()
-        elif text.strip()=="/help": self.add("assistant", "/clear  new session\n/sessions  show saved sessions\n/model NAME  change model\n/approve  tools require approval in GUI")
+        elif text.strip()=="/help": self.add("assistant", "/clear  new session\n/inspect  list project files\n/sessions  show saved sessions\n/model NAME  change model\n/approve  tools require approval in GUI")
+        elif text.strip().startswith("/inspect"):
+            path = text.strip().split(maxsplit=1)[1] if len(text.strip().split(maxsplit=1)) > 1 else "."
+            self.add("tool", execute("list_files", {"path": path}))
         else: self.add("assistant", "Unknown command. Try /help.")
 
 if __name__ == "__main__": CiprocodeGUI().mainloop()
